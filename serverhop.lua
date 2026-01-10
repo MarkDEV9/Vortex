@@ -1,68 +1,88 @@
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
 
-local FILE_NAME = "server-hop-" .. LocalPlayer.UserId .. ".json"
+local LocalPlayer = Players.LocalPlayer
+local USER_FILE = "server-hop-temp_" .. LocalPlayer.UserId .. ".json"
 
 local AllIDs = {}
-local foundAnything = nil
+local cursor = nil
 local actualHour = os.date("!*t").hour
 
 pcall(function()
-	AllIDs = HttpService:JSONDecode(readfile(FILE_NAME))
+	AllIDs = HttpService:JSONDecode(readfile(USER_FILE))
 end)
 
-if AllIDs[1] ~= actualHour then
-	AllIDs = {actualHour}
+if not AllIDs or AllIDs.hour ~= actualHour then
+	AllIDs = {
+		hour = actualHour,
+		servers = {}
+	}
 	pcall(function()
-		writefile(FILE_NAME, HttpService:JSONEncode(AllIDs))
+		writefile(USER_FILE, HttpService:JSONEncode(AllIDs))
 	end)
 end
 
 local function save()
 	pcall(function()
-		writefile(FILE_NAME, HttpService:JSONEncode(AllIDs))
+		writefile(USER_FILE, HttpService:JSONEncode(AllIDs))
 	end)
 end
 
-local function TPReturner(placeId)
-	local url = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"
-	if foundAnything then
-		url = url .. "&cursor=" .. foundAnything
+local function getServers(placeId)
+	local url = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?limit=100&sortOrder=Asc"
+	if cursor then
+		url = url .. "&cursor=" .. cursor
 	end
 
-	local Site = HttpService:JSONDecode(game:HttpGet(url))
-	foundAnything = Site.nextPageCursor
+	local success, response = pcall(function()
+		return HttpService:JSONDecode(game:HttpGet(url))
+	end)
 
-	for _, v in pairs(Site.data) do
-		if v.playing < v.maxPlayers then
-			local id = tostring(v.id)
+	if not success or not response then
+		return nil
+	end
 
-			if not table.find(AllIDs, id) then
-				table.insert(AllIDs, id)
-				save()
-				TeleportService:TeleportToPlaceInstance(placeId, id, LocalPlayer)
-				return true
+	cursor = response.nextPageCursor
+	return response.data
+end
+
+local function hop(placeId)
+	while task.wait(2) do
+		local servers = getServers(placeId)
+		if not servers then continue end
+
+		for _, server in ipairs(servers) do
+			if server.playing < server.maxPlayers then
+				if not table.find(AllIDs.servers, server.id) then
+					table.insert(AllIDs.servers, server.id)
+					save()
+
+					pcall(function()
+						TeleportService:TeleportToPlaceInstance(
+							placeId,
+							server.id,
+							LocalPlayer
+						)
+					end)
+
+					task.wait(5)
+				end
 			end
 		end
-	end
 
-	return false
+		if not cursor then
+			task.wait(3)
+		end
+	end
 end
 
 local module = {}
 
 function module:Teleport(placeId)
-	while task.wait(1) do
-		pcall(function()
-			local success = TPReturner(placeId)
-
-			if not success and not foundAnything then
-				foundAnything = nil
-			end
-		end)
-	end
+	task.spawn(function()
+		hop(placeId)
+	end)
 end
 
 return module
